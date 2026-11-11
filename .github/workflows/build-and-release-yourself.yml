@@ -116,25 +116,64 @@ jobs:
           [ -e "$EXT_SRC" ] || { echo "OpenSpotifySafariExtension.appex not found in repo" >&2; exit 1; }
           echo "OPENSPOTIFY_APPEX=$EXT_SRC" >> $GITHUB_ENV
 
-      - name: Inject OpeninSafariSpotify into base IPA & strip Watch app
+      
+      - name: Inject OpeninSafariSpotify & remove Watch app
         run: |
           cd "$(dirname "$OUT_IPA")"
+
+          IPA_NAME="$(basename "$OUT_IPA")"
+
+          # Extract IPA
           rm -rf Payload
-          
-          unzip -q "$(basename "$OUT_IPA")"
+          unzip -q "$IPA_NAME"
+
+          # Inject Safari extension
           mkdir -p "Payload/Spotify.app/PlugIns"
           rm -rf "Payload/Spotify.app/PlugIns/OpenSpotifySafariExtension.appex"
-          cp -R "$OPENSPOTIFY_APPEX" "Payload/Spotify.app/PlugIns/OpenSpotifySafariExtension.appex"
-          
-          if [ -d "Payload/Spotify.app/com.apple.WatchPlaceholder" ]; then
-            rm -rf Payload/Spotify.app/com.apple.WatchPlaceholder
+          cp -R "$OPENSPOTIFY_APPEX" \
+            "Payload/Spotify.app/PlugIns/OpenSpotifySafariExtension.appex"
+
+          # Remove Apple Watch components
+          rm -rf "Payload/Spotify.app/Watch"
+          rm -rf "Payload/Spotify.app/com.apple.WatchPlaceholder"
+
+          # Remove any remaining WatchKit application bundles
+          find "Payload/Spotify.app" -name Info.plist -print0 |
+          while IFS= read -r -d '' PLIST; do
+
+            WATCH_ID=$(
+              /usr/libexec/PlistBuddy \
+              -c "Print :WKCompanionAppBundleIdentifier" \
+              "$PLIST" 2>/dev/null || true
+            )
+
+            WATCH_APP=$(
+              /usr/libexec/PlistBuddy \
+              -c "Print :WKWatchKitApp" \
+              "$PLIST" 2>/dev/null || true
+            )
+
+            if [[ -n "$WATCH_ID" || "$WATCH_APP" == "true" ]]; then
+              APP_DIR="$(dirname "$PLIST")"
+
+              echo "Removing WatchKit component: $APP_DIR"
+              rm -rf "$APP_DIR"
+            fi
+          done
+
+          # IMPORTANT: recreate IPA from scratch
+          rm -f "$IPA_NAME"
+          zip -qry "$IPA_NAME" Payload
+
+          # Verify that no WatchKit companion remains
+          if unzip -Z1 "$IPA_NAME" | grep -E 'Watch/.*\.app/Info.plist'; then
+            echo "::error::Watch app still present in IPA"
+            exit 1
           fi
-          if [ -d "Payload/Spotify.app/Watch" ]; then
-            rm -rf Payload/Spotify.app/Watch
-          fi
-          
-          zip -qry "$(basename "$OUT_IPA")" Payload
+
           rm -rf Payload
+
+          echo "Apple Watch components removed successfully"
 
       - name: Create Patched Duplicate & LC-inject zxPluginsInject
         run: |
